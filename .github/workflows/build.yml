@@ -18,34 +18,54 @@ jobs:
     outputs:
       release_id: ${{ steps.create-release.outputs.result }}
       package_version: ${{ steps.version.outputs.version }}
+      tag_name: ${{ steps.version.outputs.tag }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Read version
         id: version
-        run: echo "version=$(node -p "require('./package.json').version")" >> "$GITHUB_OUTPUT"
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          TAG="v${VERSION}-build.${{ github.run_number }}"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+
+      - name: Create and push git tag
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "$TAG" "${{ github.sha }}" -m "Note Reader ${TAG}"
+          git push origin "$TAG"
 
       - name: Create draft release
         id: create-release
         uses: actions/github-script@v7
         env:
           PACKAGE_VERSION: ${{ steps.version.outputs.version }}
+          TAG_NAME: ${{ steps.version.outputs.tag }}
           RUN_NUMBER: ${{ github.run_number }}
           SHA: ${{ github.sha }}
         with:
           script: |
             const version = process.env.PACKAGE_VERSION;
+            const tag = process.env.TAG_NAME;
             const run = process.env.RUN_NUMBER;
             const sha = process.env.SHA.slice(0, 7);
-            const tag = `v${version}-build.${run}`;
             const { data } = await github.rest.repos.createRelease({
               owner: context.repo.owner,
               repo: context.repo.repo,
               tag_name: tag,
-              name: `Note Reader v${version} (build ${run})`,
+              target_commitish: process.env.SHA,
+              name: `Note Reader ${tag}`,
               body: [
                 '构建完成后会自动发布，可在下方 Assets 下载安装包。',
                 '',
+                `- Tag：\`${tag}\``,
+                `- 版本：\`v${version}\``,
                 `- 分支：\`main\``,
                 `- 提交：\`${sha}\``,
                 `- 运行编号：\`${run}\``,
@@ -121,8 +141,10 @@ jobs:
         uses: actions/github-script@v7
         env:
           RELEASE_ID: ${{ needs.create-release.outputs.release_id }}
+          TAG_NAME: ${{ needs.create-release.outputs.tag_name }}
         with:
           script: |
+            const tag = process.env.TAG_NAME;
             await github.rest.repos.updateRelease({
               owner: context.repo.owner,
               repo: context.repo.repo,
@@ -131,6 +153,8 @@ jobs:
               prerelease: false,
               body: [
                 '构建已完成，请在下方 Assets 下载对应平台安装包。',
+                '',
+                `- Tag：\`${tag}\``,
                 '',
                 '- macOS Apple Silicon：`.dmg`',
                 '- macOS Intel：`.dmg`',
@@ -145,16 +169,35 @@ jobs:
       contents: write
     runs-on: ubuntu-latest
     steps:
-      - name: Delete failed draft release
+      - uses: actions/checkout@v4
+      - name: Delete failed draft release and tag
         uses: actions/github-script@v7
         env:
           RELEASE_ID: ${{ needs.create-release.outputs.release_id }}
+          TAG_NAME: ${{ needs.create-release.outputs.tag_name }}
         with:
           script: |
             const id = process.env.RELEASE_ID;
-            if (!id) return;
-            await github.rest.repos.deleteRelease({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              release_id: id,
-            });
+            const tag = process.env.TAG_NAME;
+            if (id) {
+              try {
+                await github.rest.repos.deleteRelease({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  release_id: id,
+                });
+              } catch (e) {
+                core.warning(`deleteRelease: ${e.message}`);
+              }
+            }
+            if (tag) {
+              try {
+                await github.rest.git.deleteRef({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  ref: `tags/${tag}`,
+                });
+              } catch (e) {
+                core.warning(`deleteTag: ${e.message}`);
+              }
+            }
