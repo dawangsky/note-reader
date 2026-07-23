@@ -11,7 +11,52 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  create-release:
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
+    outputs:
+      release_id: ${{ steps.create-release.outputs.result }}
+      package_version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read version
+        id: version
+        run: echo "version=$(node -p "require('./package.json').version")" >> "$GITHUB_OUTPUT"
+
+      - name: Create draft release
+        id: create-release
+        uses: actions/github-script@v7
+        env:
+          PACKAGE_VERSION: ${{ steps.version.outputs.version }}
+          RUN_NUMBER: ${{ github.run_number }}
+          SHA: ${{ github.sha }}
+        with:
+          script: |
+            const version = process.env.PACKAGE_VERSION;
+            const run = process.env.RUN_NUMBER;
+            const sha = process.env.SHA.slice(0, 7);
+            const tag = `v${version}-build.${run}`;
+            const { data } = await github.rest.repos.createRelease({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              tag_name: tag,
+              name: `Note Reader v${version} (build ${run})`,
+              body: [
+                '构建完成后会自动发布，可在下方 Assets 下载安装包。',
+                '',
+                `- 分支：\`main\``,
+                `- 提交：\`${sha}\``,
+                `- 运行编号：\`${run}\``,
+              ].join('\n'),
+              draft: true,
+              prerelease: false,
+            });
+            return data.id;
+
   build:
+    needs: create-release
     permissions:
       contents: write
     strategy:
@@ -21,18 +66,12 @@ jobs:
           - platform: macos-latest
             rust_target: aarch64-apple-darwin
             args: --target aarch64-apple-darwin --bundles dmg
-            artifact_name: note-reader-macos-aarch64
-            artifact_path: src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg
           - platform: macos-latest
             rust_target: x86_64-apple-darwin
             args: --target x86_64-apple-darwin --bundles dmg
-            artifact_name: note-reader-macos-x64
-            artifact_path: src-tauri/target/x86_64-apple-darwin/release/bundle/dmg/*.dmg
           - platform: windows-latest
             rust_target: ""
             args: --bundles nsis
-            artifact_name: note-reader-windows-x64
-            artifact_path: src-tauri/target/release/bundle/nsis/*.exe
 
     runs-on: ${{ matrix.platform }}
 
@@ -62,25 +101,37 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
 
-      - name: Build Tauri app
+      - name: Build and upload to release
         uses: tauri-apps/tauri-action@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
+          releaseId: ${{ needs.create-release.outputs.release_id }}
           args: ${{ matrix.args }}
-          tagName: build-${{ github.run_number }}
-          releaseName: Note Reader build ${{ github.run_number }}
-          releaseBody: |
-            自动构建自 `main`（`${{ github.sha }}`）。
 
-            可在下方 Assets 下载安装包，或到对应 workflow run 的 Artifacts 下载。
-          releaseDraft: true
-          prerelease: false
-
-      - name: Upload build artifacts
-        uses: actions/upload-artifact@v4
+  publish-release:
+    needs: [create-release, build]
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
+    steps:
+      - name: Publish release
+        uses: actions/github-script@v7
+        env:
+          RELEASE_ID: ${{ needs.create-release.outputs.release_id }}
         with:
-          name: ${{ matrix.artifact_name }}
-          path: ${{ matrix.artifact_path }}
-          if-no-files-found: error
-          retention-days: 30
+          script: |
+            await github.rest.repos.updateRelease({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              release_id: process.env.RELEASE_ID,
+              draft: false,
+              prerelease: false,
+              body: [
+                '构建已完成，请在下方 Assets 下载对应平台安装包。',
+                '',
+                '- macOS Apple Silicon：`.dmg`',
+                '- macOS Intel：`.dmg`',
+                '- Windows：`.exe` 安装程序',
+              ].join('\n'),
+            });
