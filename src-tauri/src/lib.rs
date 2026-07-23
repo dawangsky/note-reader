@@ -6,8 +6,10 @@ use std::time::Duration;
 use tauri::{
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    AppHandle, Emitter, Manager, RunEvent, State, WindowEvent,
+    AppHandle, Emitter, Manager, State, WindowEvent,
 };
+#[cfg(target_os = "macos")]
+use tauri::RunEvent;
 
 static CLOSE_PROMPT_OPEN: AtomicBool = AtomicBool::new(false);
 static REPLACE_RESTART_ARMED: AtomicBool = AtomicBool::new(false);
@@ -345,6 +347,8 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
         .run(|app_handle, event| {
+            // macOS Dock "reopen" when all windows are closed; unavailable on Windows/Linux.
+            #[cfg(target_os = "macos")]
             if let RunEvent::Reopen {
                 has_visible_windows,
                 ..
@@ -353,6 +357,10 @@ pub fn run() {
                 if !has_visible_windows {
                     show_main_window(app_handle);
                 }
+            }
+            #[cfg(not(target_os = "macos"))]
+            {
+                let _ = (app_handle, event);
             }
         });
 }
