@@ -76,41 +76,49 @@ async function load() {
   if (!col.value || !article.value) {
     return;
   }
+  cleanup();
   loading.value = true;
   error.value = "";
+  const current = article.value;
+  const column = col.value;
+  const k = articleKindOf(current);
   try {
-    const k = articleKindOf(article.value);
     if (k === "pdf") {
-      pdfUrl.value = await resolveFileUrl(article.value.path);
+      pdfUrl.value = await resolveFileUrl(current.path);
     } else if (k === "docx") {
-      html.value = await renderDocx(article.value.path);
+      html.value = await renderDocx(current.path);
     } else {
-      const md = await readArticle(article.value.path);
-      html.value = await renderMarkdown(md, col.value.dir);
+      const md = await readArticle(current.path);
+      html.value = await renderMarkdown(md, column.dir);
     }
-    await nextTick();
-    if (k === "markdown" && articleEl.value) {
-      await hydrateMermaid(articleEl.value);
-    }
-    const key = `${col.value.slug}/${article.value.filename}`;
-    const map = loadProgress();
-    const saved = map[key];
-    if (saved?.scroll && k !== "pdf") window.scrollTo(0, saved.scroll);
-
-    onScroll = () => {
-      const max = document.documentElement.scrollHeight - window.innerHeight;
-      const ratio = max > 0 ? window.scrollY / max : 0;
-      progressWidth.value = Math.min(100, ratio * 100);
-      map[key] = { scroll: window.scrollY, at: Date.now() };
-      saveProgress(map);
-    };
-    window.addEventListener("scroll", onScroll, { passive: true });
-    onScroll();
   } catch (e) {
     error.value = String(e);
   } finally {
     loading.value = false;
   }
+
+  // article 仅在 loading=false 时挂载，必须先结束 loading 再渲染 Mermaid
+  await nextTick();
+  if (!error.value && k === "markdown" && articleEl.value) {
+    await hydrateMermaid(articleEl.value);
+  }
+
+  if (error.value || !column || !current) return;
+
+  const key = `${column.slug}/${current.filename}`;
+  const map = loadProgress();
+  const saved = map[key];
+  if (saved?.scroll && k !== "pdf") window.scrollTo(0, saved.scroll);
+
+  onScroll = () => {
+    const max = document.documentElement.scrollHeight - window.innerHeight;
+    const ratio = max > 0 ? window.scrollY / max : 0;
+    progressWidth.value = Math.min(100, ratio * 100);
+    map[key] = { scroll: window.scrollY, at: Date.now() };
+    saveProgress(map);
+  };
+  window.addEventListener("scroll", onScroll, { passive: true });
+  onScroll();
 }
 
 function cleanup() {
