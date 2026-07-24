@@ -4,9 +4,9 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue"
 import { useRouter } from "vue-router";
 import { store } from "../store";
 import { readArticle, resolveFileUrl } from "../api";
-import { renderMarkdown } from "../markdown";
+import { renderMarkdown, hydrateMermaid } from "../markdown";
 import { renderDocx } from "../docx";
-import { loadProgress, saveProgress } from "../prefs";
+import { loadProgress, saveProgress, prefs } from "../prefs";
 import { articleKindOf } from "../types";
 import AppTopbar from "../components/AppTopbar.vue";
 
@@ -21,6 +21,7 @@ const loading = ref(false);
 const error = ref("");
 const progressWidth = ref(0);
 const linkView = ref<{ url: string; label: string } | null>(null);
+const articleEl = ref<HTMLElement | null>(null);
 
 const PDF_ZOOM_MIN = 50;
 const PDF_ZOOM_MAX = 300;
@@ -88,6 +89,9 @@ async function load() {
       html.value = await renderMarkdown(md, col.value.dir);
     }
     await nextTick();
+    if (k === "markdown" && articleEl.value) {
+      await hydrateMermaid(articleEl.value);
+    }
     const key = `${col.value.slug}/${article.value.filename}`;
     const map = loadProgress();
     const saved = map[key];
@@ -193,6 +197,15 @@ watch(
   }
 );
 
+watch(
+  () => prefs.theme,
+  async () => {
+    if (kind.value !== "markdown" || !articleEl.value || !html.value) return;
+    await nextTick();
+    await hydrateMermaid(articleEl.value);
+  }
+);
+
 onMounted(() => {
   load();
   window.addEventListener("app-back", onAppBack);
@@ -258,6 +271,7 @@ function onAppBack(e: Event) {
       </template>
       <article
         v-else
+        ref="articleEl"
         class="article"
         :class="{ 'article-docx': kind === 'docx' }"
         v-html="html"
